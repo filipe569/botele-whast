@@ -1,0 +1,5 @@
+{
+  "name": "Ponte de Mensagens Tele-Zap",
+  "description": "Uma interface de usuário para configurar e monitorar uma ponte de mensagens entre um grupo do Telegram e um grupo do WhatsApp. Esta é uma simulação de UI/UX e não executa a ponte de mensagens real, que exigiria um backend seguro.",
+  "requestFramePermissions": []
+}
