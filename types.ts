@@ -12,4 +12,5 @@ export interface LogMessage {
   user: string;
   text: string;
   timestamp: string;
+  type?: 'text' | 'media';
 }

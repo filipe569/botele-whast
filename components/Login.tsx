@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 
 interface LoginProps {
-  onLogin: () => void;
+  onLogin: (username: string) => void;
 }
 
 const Login: React.FC<LoginProps> = ({ onLogin }) => {
@@ -9,16 +9,24 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    const expectedUsername = import.meta.env.VITE_APP_USERNAME || 'admin';
-    const expectedPassword = import.meta.env.VITE_APP_PASSWORD || 'admin123';
-
-    if (username === expectedUsername && password === expectedPassword) {
-      onLogin();
-    } else {
-      setError('Usuário ou senha incorretos');
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      });
+      
+      const data = await res.json();
+      if (data.success) {
+        onLogin(username);
+      } else {
+        setError(data.message || 'Usuário ou senha incorretos');
+      }
+    } catch (err) {
+      setError('Erro ao conectar com o servidor');
     }
   };
 
@@ -44,18 +52,18 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               className="w-full bg-brand-bg-dark border border-gray-600 rounded-lg py-3 px-4 text-white focus:ring-2 focus:ring-brand-telegram focus:border-brand-telegram outline-none transition-all"
-              placeholder="Digite seu usuário"
+              placeholder="Digite o usuário"
               required
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">Senha</label>
+            <label className="block text-sm font-medium text-gray-300 mb-1">Senha de Acesso</label>
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="w-full bg-brand-bg-dark border border-gray-600 rounded-lg py-3 px-4 text-white focus:ring-2 focus:ring-brand-telegram focus:border-brand-telegram outline-none transition-all"
-              placeholder="Digite sua senha"
+              placeholder="Digite a senha"
               required
             />
           </div>

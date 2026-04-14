@@ -1,0 +1,8 @@
+{
+  "password": "admin",
+  "rules": [
+    "SERVIDOR - BLAZE && Filme",
+    "SERVIDOR - BLAZE && Série",
+    "SERVIDOR - BLAZE && BLAZE"
+  ]
+}

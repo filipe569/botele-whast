@@ -4,10 +4,12 @@ import Header from './components/Header';
 import ConfigForm from './components/ConfigForm';
 import Dashboard from './components/Dashboard';
 import Login from './components/Login';
+import Register from './components/Register';
 import { io, Socket } from 'socket.io-client';
 
 const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [currentUser, setCurrentUser] = useState<string>('');
   const [status, setStatus] = useState<ConnectionStatus>(ConnectionStatus.DISCONNECTED);
   const [telegramGroup, setTelegramGroup] = useState<string>('');
   const [whatsappGroup, setWhatsappGroup] = useState<string>('');
@@ -16,6 +18,7 @@ const App: React.FC = () => {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [waQrCode, setWaQrCode] = useState<string | null>(null);
   const [otpCode, setOtpCode] = useState<string>('');
+  const [isForwarding, setIsForwarding] = useState<boolean>(true);
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -33,6 +36,7 @@ const App: React.FC = () => {
       }
       if (data.tgGroup) setTelegramGroup(data.tgGroup);
       if (data.waGroup) setWhatsappGroup(data.waGroup);
+      if (data.isForwarding !== undefined) setIsForwarding(data.isForwarding);
     });
 
     newSocket.on('log', (data) => {
@@ -41,6 +45,7 @@ const App: React.FC = () => {
         user: data.source,
         text: data.message,
         timestamp: new Date().toLocaleTimeString('pt-BR'),
+        type: data.type
       }, ...prev.slice(0, 99)]);
     });
 
@@ -92,6 +97,14 @@ const App: React.FC = () => {
     setWaQrCode(null);
   }, [socket]);
 
+  const handlePause = useCallback(() => {
+    if (socket) socket.emit('pause_bridge');
+  }, [socket]);
+
+  const handleResume = useCallback(() => {
+    if (socket) socket.emit('resume_bridge');
+  }, [socket]);
+
   const submitOtp = () => {
     if (socket && otpCode) {
       socket.emit('tg_code', otpCode);
@@ -99,8 +112,16 @@ const App: React.FC = () => {
     }
   };
 
+  const path = window.location.pathname;
+  if (path === '/registro-oculto') {
+    return <Register />;
+  }
+
   if (!isAuthenticated) {
-    return <Login onLogin={() => setIsAuthenticated(true)} />;
+    return <Login onLogin={(user) => {
+      setCurrentUser(user);
+      setIsAuthenticated(true);
+    }} />;
   }
 
   return (
@@ -118,6 +139,10 @@ const App: React.FC = () => {
               logs={logs}
               waQrCode={waQrCode}
               onDisconnect={handleDisconnect}
+              isForwarding={isForwarding}
+              onPause={handlePause}
+              onResume={handleResume}
+              currentUser={currentUser}
             />
           )}
         </div>
