@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { ConnectionStatus, LogMessage } from '../types';
 import TelegramIcon from './icons/TelegramIcon';
 import WhatsAppIcon from './icons/WhatsAppIcon';
@@ -19,6 +19,7 @@ interface DashboardProps {
   isForwarding: boolean;
   onPause: () => void;
   onResume: () => void;
+  onBroadcast?: (text: string, imageBase64: string | null, mimeType: string | null, delay: number, filename: string | null, sendToAllGroups: boolean, loopHours: number) => void;
   currentUser: string;
 }
 
@@ -40,10 +41,19 @@ const StatusIndicator: React.FC<{ status: ConnectionStatus }> = ({ status }) => 
   return <div className="text-red-400">Desconectada</div>;
 };
 
-const Dashboard: React.FC<DashboardProps> = ({ status, telegramGroup, whatsappGroup, logs, waQrCode, onDisconnect, isForwarding, onPause, onResume, currentUser }) => {
+const Dashboard: React.FC<DashboardProps> = ({ status, telegramGroup, whatsappGroup, logs, waQrCode, onDisconnect, isForwarding, onPause, onResume, onBroadcast, currentUser }) => {
   const [showSettings, setShowSettings] = useState(false);
   const [filterSource, setFilterSource] = useState<'all' | 'Telegram' | 'System' | 'Error'>('all');
   const [filterType, setFilterType] = useState<'all' | 'text' | 'media'>('all');
+  
+  // Broadcast Form State
+  const [showBroadcast, setShowBroadcast] = useState(false);
+  const [broadcastText, setBroadcastText] = useState('');
+  const [broadcastDelay, setBroadcastDelay] = useState(5);
+  const [broadcastFile, setBroadcastFile] = useState<File | null>(null);
+  const [broadcastSendToAll, setBroadcastSendToAll] = useState(false);
+  const [broadcastLoopHours, setBroadcastLoopHours] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const getGroupName = (url: string) => {
     try {
@@ -59,6 +69,36 @@ const Dashboard: React.FC<DashboardProps> = ({ status, telegramGroup, whatsappGr
     if (filterType !== 'all' && log.type !== filterType && log.user === 'Telegram') return false;
     return true;
   });
+
+  const handleBroadcastSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!onBroadcast) return;
+    
+    if (broadcastFile) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const base64Data = event.target?.result as string;
+        const matches = base64Data.match(/^data:(.+);base64,(.+)$/);
+        if (matches && matches.length === 3) {
+          const mimeType = matches[1];
+          const base64 = matches[2];
+          onBroadcast(broadcastText, base64, mimeType, broadcastDelay, broadcastFile.name, broadcastSendToAll, broadcastLoopHours);
+        } else {
+          alert('Erro ao ler a imagem.');
+        }
+      };
+      reader.readAsDataURL(broadcastFile);
+    } else {
+      if (!broadcastText.trim()) return;
+      onBroadcast(broadcastText, null, null, broadcastDelay, null, broadcastSendToAll, broadcastLoopHours);
+    }
+    
+    setBroadcastText('');
+    setBroadcastFile(null);
+    setBroadcastLoopHours(0);
+    setShowBroadcast(false);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
 
   return (
     <div>
@@ -87,22 +127,31 @@ const Dashboard: React.FC<DashboardProps> = ({ status, telegramGroup, whatsappGr
           </div>
           <div className="flex items-center gap-3 flex-wrap">
             {status === ConnectionStatus.CONNECTED && (
-              <button
-                onClick={isForwarding ? onPause : onResume}
-                className={`flex items-center gap-2 font-bold py-2 px-4 rounded-lg transition-colors duration-200 ${isForwarding ? 'bg-yellow-600 hover:bg-yellow-700 text-white' : 'bg-green-600 hover:bg-green-700 text-white'}`}
-              >
-                {isForwarding ? (
-                  <>
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                    Pausar
-                  </>
-                ) : (
-                  <>
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                    Retomar
-                  </>
-                )}
-              </button>
+              <>
+                <button
+                  onClick={() => setShowBroadcast(!showBroadcast)}
+                  className="flex items-center gap-2 bg-brand-primary hover:bg-brand-primary-hover text-white font-bold py-2 px-4 rounded-lg transition-colors duration-200"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5.882V19.24a1.76 1.76 0 01-3.417.592l-2.147-6.15M18 13a3 3 0 100-6M5.436 13.683A4.001 4.001 0 017 6h1.832c4.1 0 7.625-1.234 9.168-3v14c-1.543-1.766-5.067-3-9.168-3H7a3.988 3.988 0 01-1.564-.317z"></path></svg>
+                  Mensagem em Massa
+                </button>
+                <button
+                  onClick={isForwarding ? onPause : onResume}
+                  className={`flex items-center gap-2 font-bold py-2 px-4 rounded-lg transition-colors duration-200 ${isForwarding ? 'bg-yellow-600 hover:bg-yellow-700 text-white' : 'bg-green-600 hover:bg-green-700 text-white'}`}
+                >
+                  {isForwarding ? (
+                    <>
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                      Pausar
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                      Retomar
+                    </>
+                  )}
+                </button>
+              </>
             )}
             <button
               onClick={() => setShowSettings(true)}
@@ -122,6 +171,99 @@ const Dashboard: React.FC<DashboardProps> = ({ status, telegramGroup, whatsappGr
         </div>
       </div>
       
+      {showBroadcast && status === ConnectionStatus.CONNECTED && (
+        <div className="p-6 bg-brand-bg-dark border-b border-gray-700">
+           <h3 className="text-xl font-bold text-white mb-4">📢 Enviar Mensagem em Massa (WhatsApp)</h3>
+           <p className="text-gray-400 text-sm mb-4">Envie uma mensagem programada para os grupos do WhatsApp.</p>
+           
+           <form onSubmit={handleBroadcastSubmit} className="space-y-4">
+             <div>
+               <label className="block text-sm font-medium text-gray-300 mb-1">Texto da Mensagem</label>
+               <textarea
+                 value={broadcastText}
+                 onChange={(e) => setBroadcastText(e.target.value)}
+                 className="w-full bg-brand-surface border border-gray-600 rounded-lg py-2 px-3 text-white focus:ring-2 focus:ring-brand-primary focus:border-brand-primary"
+                 rows={3}
+                 placeholder="Digite sua mensagem aqui..."
+               ></textarea>
+             </div>
+             
+             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+               <div>
+                 <label className="block text-sm font-medium text-gray-300 mb-1">Imagem ou Mídia (Opcional)</label>
+                 <input
+                   type="file"
+                   ref={fileInputRef}
+                   accept="image/*,video/*"
+                   onChange={(e) => setBroadcastFile(e.target.files?.[0] || null)}
+                   className="w-full text-sm text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-gray-700 file:text-white hover:file:bg-gray-600 cursor-pointer"
+                 />
+                 {broadcastFile && <p className="text-xs text-brand-primary mt-1">Anexo: {broadcastFile.name}</p>}
+               </div>
+               
+               <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">Intervalo entre envios (s)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="120"
+                    value={broadcastDelay}
+                    onChange={(e) => setBroadcastDelay(Number(e.target.value))}
+                    className="w-full bg-brand-surface border border-gray-600 rounded-lg py-2 px-3 text-white focus:ring-2 focus:ring-brand-primary focus:border-brand-primary"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Delay entre grupos</p>
+               </div>
+             </div>
+
+             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 border-t border-gray-700 pt-4 mt-2">
+                <div className="flex items-center gap-3">
+                  <input 
+                    type="checkbox" 
+                    id="sendToAll"
+                    checked={broadcastSendToAll}
+                    onChange={(e) => setBroadcastSendToAll(e.target.checked)}
+                    className="w-5 h-5 rounded border-gray-600 text-brand-primary focus:ring-brand-primary bg-brand-surface"
+                  />
+                  <label htmlFor="sendToAll" className="text-sm font-medium text-gray-300 cursor-pointer">
+                    Enviar para <strong>TODOS OS MEUS GRUPOS</strong> do WhatsApp <br/>
+                    <span className="text-xs text-gray-500 font-normal">(Ignora a lista da tela inicial)</span>
+                  </label>
+                </div>
+                
+                <div>
+                   <label className="block text-sm font-medium text-gray-300 mb-1">Loop: Repetir a cada X horas</label>
+                   <input
+                     type="number"
+                     min="0"
+                     max="720"
+                     value={broadcastLoopHours}
+                     onChange={(e) => setBroadcastLoopHours(Number(e.target.value))}
+                     className="w-full bg-brand-surface border border-gray-600 rounded-lg py-2 px-3 text-white focus:ring-2 focus:ring-brand-primary focus:border-brand-primary"
+                   />
+                   <p className="text-xs text-gray-500 mt-1">Coloque 0 para enviar apenas uma vez.</p>
+                </div>
+             </div>
+             
+             <div className="flex justify-end gap-3 pt-2">
+               <button
+                 type="button"
+                 onClick={() => setShowBroadcast(false)}
+                 className="bg-gray-700 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-lg transition-colors duration-200"
+               >
+                 Cancelar
+               </button>
+               <button
+                 type="submit"
+                 disabled={!broadcastText && !broadcastFile}
+                 className="bg-brand-primary hover:bg-brand-primary-hover disabled:bg-gray-700 disabled:cursor-not-allowed text-white font-bold py-2 px-6 rounded-lg transition-colors duration-200"
+               >
+                 Disparar Mensagem
+               </button>
+             </div>
+           </form>
+        </div>
+      )}
+
       <div className="p-4 bg-brand-bg-dark border-b border-gray-700 flex flex-wrap gap-4 items-center">
         <span className="text-sm font-medium text-gray-400">Filtros:</span>
         <select 

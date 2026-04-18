@@ -30,7 +30,7 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ onConnect, status, error }) => 
     <div className="p-8 md:p-12">
       <h2 className="text-2xl font-bold text-white mb-2">Configurar a Ponte (Userbot)</h2>
       <p className="text-gray-400 mb-8">
-        Insira suas credenciais do Telegram e os IDs dos grupos para iniciar.
+        Insira suas credenciais do Telegram e os IDs dos grupos para iniciar. Você pode adicionar múltiplos grupos separando-os por vírgula.
       </p>
 
       {error && (
@@ -85,31 +85,33 @@ const ConfigForm: React.FC<ConfigFormProps> = ({ onConnect, status, error }) => 
         <div>
           <label className="flex items-center gap-2 text-lg font-medium text-gray-300 mb-2">
             <TelegramIcon className="w-6 h-6" />
-            ID do Grupo Telegram (Opcional)
+            IDs dos Grupos Telegram (Opcional)
           </label>
           <input
             type="text"
             value={telegramGroup}
             onChange={(e) => setTelegramGroup(e.target.value)}
-            placeholder="Ex: @blazetopt"
+            placeholder="Ex: @grupo1, @grupo2"
             className="w-full bg-brand-surface border border-gray-600 rounded-lg py-3 px-4 text-white placeholder-gray-500 focus:ring-2 focus:ring-brand-telegram focus:border-brand-telegram transition"
             disabled={isConnecting}
           />
+          <p className="text-xs text-gray-500 mt-1">Separe múltiplos grupos por vírgula (,)</p>
         </div>
 
         <div>
           <label className="flex items-center gap-2 text-lg font-medium text-gray-300 mb-2">
             <WhatsAppIcon className="w-6 h-6" />
-            ID do Grupo WhatsApp (Opcional)
+            IDs dos Grupos WhatsApp (Opcional)
           </label>
           <input
             type="text"
             value={whatsappGroup}
             onChange={(e) => setWhatsappGroup(e.target.value)}
-            placeholder="Ex: 557188070918-1601429751@g.us"
+            placeholder="Ex: 123@g.us, 456@g.us"
             className="w-full bg-brand-surface border border-gray-600 rounded-lg py-3 px-4 text-white placeholder-gray-500 focus:ring-2 focus:ring-brand-whatsapp focus:border-brand-whatsapp transition"
             disabled={isConnecting}
           />
+          <p className="text-xs text-gray-500 mt-1">Separe múltiplos grupos por vírgula (,)</p>
         </div>
 
         <button

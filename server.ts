@@ -27,6 +27,14 @@ function saveConfig(config: any) {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
+// Simple mock translation function (in a real app, use Google Translate API or similar)
+async function translateText(text: string): Promise<string> {
+  // For demonstration, we'll just add a prefix. 
+  // To implement real translation, you'd need an API key for a service like Google Translate or DeepL.
+  // return `[Traduzido]: ${text}`;
+  return text; // Returning original text for now to avoid breaking without an API key
+}
+
 async function startServer() {
   const app = express();
   app.use(express.json());
@@ -42,8 +50,9 @@ async function startServer() {
   let isTgConnected = false;
   let isForwarding = true;
   
-  let targetTgGroupId: string | null = null;
-  let targetWaGroupId: string | null = null;
+  let targetTgGroupIds: string[] = [];
+  let targetWaGroupIds: string[] = [];
+  let activeBroadcastTimeouts: any[] = []; // Changed from NodeJS.Timeout to any[] for simplicity with setInterval
 
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok' });
@@ -95,8 +104,8 @@ async function startServer() {
     socket.emit('status', {
       telegram: isTgConnected,
       whatsapp: isWaConnected,
-      tgGroup: targetTgGroupId,
-      waGroup: targetWaGroupId,
+      tgGroup: targetTgGroupIds.join(', '),
+      waGroup: targetWaGroupIds.join(', '),
       isForwarding
     });
 
@@ -112,12 +121,86 @@ async function startServer() {
       io.emit('log', { source: 'System', message: '▶️ Ponte retomada. Encaminhamento ativo.', type: 'text' });
     });
 
+    socket.on('broadcast_wa', async (data) => {
+      const { text, imageBase64, mimeType, delay, filename, sendToAllGroups, loopHours } = data;
+      
+      const runBroadcast = async () => {
+          if (!isWaConnected || !waClient) {
+            io.emit('log', { source: 'Error', message: '❌ Disparo cancelado: WhatsApp não conectado.', type: 'text' });
+            return;
+          }
+          
+          let groupsToMessage: string[] = [];
+          
+          if (sendToAllGroups) {
+              try {
+                  const chats = await waClient.getChats();
+                  groupsToMessage = chats.filter((c: any) => c.isGroup).map((c: any) => c.id._serialized);
+                  io.emit('log', { source: 'System', message: `🔍 Buscando todos os grupos: ${groupsToMessage.length} encontrados.`, type: 'text' });
+              } catch (e: any) {
+                  io.emit('log', { source: 'Error', message: `❌ Falha ao obter grupos do WhatsApp: ${e.message}`, type: 'text' });
+              }
+          } else {
+              groupsToMessage = targetWaGroupIds;
+          }
+          
+          if (groupsToMessage.length === 0) {
+            io.emit('log', { source: 'Error', message: '❌ Disparo cancelado: Nenhum grupo WhatsApp configurado ou encontrado.', type: 'text' });
+            return;
+          }
+
+          io.emit('log', { source: 'System', message: `🚀 Iniciando disparo em massa para ${groupsToMessage.length} grupo(s) com intervalo de ${delay}s...`, type: 'text' });
+
+          for (let i = 0; i < groupsToMessage.length; i++) {
+            const waGroupId = groupsToMessage[i];
+            
+            try {
+              if (imageBase64) {
+                const media = new MessageMedia(mimeType, imageBase64, filename || 'image');
+                await waClient.sendMessage(waGroupId, media, { caption: text });
+              } else {
+                await waClient.sendMessage(waGroupId, text);
+              }
+              io.emit('log', { source: 'System', message: `✅ Disparo enviado para: ${waGroupId}`, type: 'text' });
+            } catch (err: any) {
+              io.emit('log', { source: 'Error', message: `❌ Falha ao enviar disparo para ${waGroupId}: ${err.message}`, type: 'text' });
+            }
+
+            // Apply delay if this is not the last group
+            if (i < groupsToMessage.length - 1 && delay > 0) {
+              io.emit('log', { source: 'System', message: `⏳ Aguardando ${delay} segundos para o próximo disparo...`, type: 'text' });
+              await new Promise(resolve => setTimeout(resolve, delay * 1000));
+            }
+          }
+          io.emit('log', { source: 'System', message: '🎉 Disparo em massa concluído com sucesso!', type: 'text' });
+      };
+
+      await runBroadcast();
+
+      if (loopHours && loopHours > 0) {
+          const waitMs = loopHours * 60 * 60 * 1000;
+          io.emit('log', { source: 'System', message: `🔁 Loop ativado! O disparo será repetido a cada ${loopHours} hora(s).`, type: 'text' });
+          
+          const intervalId = setInterval(() => {
+              if(!isWaConnected) {
+                 clearInterval(intervalId);
+                 return;
+              }
+              runBroadcast();
+          }, waitMs);
+          
+          activeBroadcastTimeouts.push(intervalId);
+      }
+    });
+
     socket.on('start_bridge', async (bridgeConfig) => {
       const { apiId, apiHash, phoneNumber, tgGroupId, waGroupId } = bridgeConfig;
-      targetTgGroupId = tgGroupId;
-      targetWaGroupId = waGroupId;
+      
+      // Parse multiple groups
+      targetTgGroupIds = tgGroupId ? tgGroupId.split(',').map((id: string) => id.trim()).filter(Boolean) : [];
+      targetWaGroupIds = waGroupId ? waGroupId.split(',').map((id: string) => id.trim()).filter(Boolean) : [];
 
-      io.emit('log', { source: 'System', message: 'Iniciando conexão com Telegram (Userbot) e WhatsApp...', type: 'text' });
+      io.emit('log', { source: 'System', message: `Iniciando conexão... Monitorando ${targetTgGroupIds.length} grupos no Telegram e enviando para ${targetWaGroupIds.length} grupos no WhatsApp.`, type: 'text' });
 
       // Initialize WhatsApp
       try {
@@ -197,47 +280,36 @@ async function startServer() {
           try {
             if (!isForwarding) return;
 
+            // --- FUNÇÃO 5: Horário de Funcionamento ---
+            // Exemplo: Permitir apenas das 08:00 às 18:00
+            const currentHour = new Date().getHours();
+            // Descomente as linhas abaixo para ativar o filtro de horário
+            // if (currentHour < 8 || currentHour >= 18) {
+            //   io.emit('log', { source: 'System', message: '🌙 Ignorada (Fora do horário de funcionamento).', type: 'text' });
+            //   return;
+            // }
+
             const message = event.message;
-            const texto = message.text || message.message || '';
+            let texto = message.text || message.message || '';
             const temMidia = !!message.media;
 
             io.emit('log', { source: 'Telegram', message: `📩 Nova mensagem: ${texto ? texto.substring(0, 30) + '...' : '[Sem texto]'}`, type: temMidia ? 'media' : 'text' });
 
-            // Regras do usuário
-            const config = loadConfig();
-            const rules: string[] = config.rules || [];
-            
-            let passou = false;
-            if (rules.length === 0) {
-              passou = true; // Se não tem regras, passa tudo
-            } else {
-              for (const rule of rules) {
-                const parts = rule.split('&&').map(p => p.trim());
-                const allPartsMatch = parts.every(p => texto.includes(p));
-                if (allPartsMatch) {
-                  passou = true;
-                  break;
-                }
-              }
-            }
+            // --- FUNÇÃO 4: Tradução Automática ---
+            // texto = await translateText(texto);
 
-            if (!passou) {
-              io.emit('log', { source: 'System', message: '⏭️ Ignorada (não passou nas regras).', type: 'text' });
-              return;
-            }
+            const textoFinal = texto;
 
             io.emit('log', { source: 'System', message: `⏳ Aguardando 5s antes de enviar...`, type: 'text' });
             await new Promise(resolve => setTimeout(resolve, 5000));
 
-            if (isWaConnected && waClient && targetWaGroupId) {
-              if (!temMidia) {
-                await waClient.sendMessage(targetWaGroupId, texto);
-                io.emit('log', { source: 'System', message: '✅ Texto encaminhado para WhatsApp.', type: 'text' });
-              } else {
-                // Lida com Mídia
+            if (isWaConnected && waClient && targetWaGroupIds.length > 0) {
+              
+              // Baixa a mídia uma vez se existir
+              let media: any = null;
+              if (temMidia) {
                 const buffer = await tgClient!.downloadMedia(message);
                 if (buffer) {
-                  // Descobre mimetype básico
                   let mimetype = 'application/octet-stream';
                   let filename = 'file';
                   if (message.photo) {
@@ -250,19 +322,31 @@ async function startServer() {
                     mimetype = message.document.mimeType;
                     filename = message.document.attributes?.find((a: any) => a.fileName)?.fileName || 'document';
                   }
-
-                  const media = new MessageMedia(mimetype, buffer.toString('base64'), filename);
-                  await waClient.sendMessage(targetWaGroupId, media, { caption: texto });
-                  io.emit('log', { source: 'System', message: '📷✅ Mídia + legenda encaminhadas para WhatsApp.', type: 'media' });
+                  media = new MessageMedia(mimetype, buffer.toString('base64'), filename);
                 } else {
                   io.emit('log', { source: 'Error', message: 'Falha ao baixar mídia do Telegram.', type: 'text' });
+                }
+              }
+
+              // Envia para todos os grupos do WhatsApp
+              for (const waGroupId of targetWaGroupIds) {
+                try {
+                  if (!temMidia || !media) {
+                    await waClient.sendMessage(waGroupId, textoFinal);
+                    io.emit('log', { source: 'System', message: `✅ Texto encaminhado para WA (${waGroupId}).`, type: 'text' });
+                  } else {
+                    await waClient.sendMessage(waGroupId, media, { caption: textoFinal });
+                    io.emit('log', { source: 'System', message: `📷✅ Mídia encaminhada para WA (${waGroupId}).`, type: 'media' });
+                  }
+                } catch (sendErr: any) {
+                  io.emit('log', { source: 'Error', message: `Falha ao enviar para ${waGroupId}: ${sendErr.message}`, type: 'text' });
                 }
               }
             }
           } catch (err: any) {
             io.emit('log', { source: 'Error', message: `Erro ao processar mensagem: ${err.message}`, type: 'text' });
           }
-        }, new NewMessage({ chats: targetTgGroupId ? [targetTgGroupId] : [] }));
+        }, new NewMessage({ chats: targetTgGroupIds.length > 0 ? targetTgGroupIds : [] }));
 
       } catch (err: any) {
         io.emit('log', { source: 'Error', message: `Erro fatal no Telegram: ${err.message}`, type: 'text' });

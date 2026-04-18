@@ -5,6 +5,7 @@ import ConfigForm from './components/ConfigForm';
 import Dashboard from './components/Dashboard';
 import Login from './components/Login';
 import Register from './components/Register';
+import SettingsPanel from './components/SettingsPanel';
 import { io, Socket } from 'socket.io-client';
 
 const App: React.FC = () => {
@@ -19,6 +20,7 @@ const App: React.FC = () => {
   const [waQrCode, setWaQrCode] = useState<string | null>(null);
   const [otpCode, setOtpCode] = useState<string>('');
   const [isForwarding, setIsForwarding] = useState<boolean>(true);
+  const [showSettings, setShowSettings] = useState(false);
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -58,7 +60,6 @@ const App: React.FC = () => {
     });
 
     newSocket.on('need_tg_password', () => {
-      // For simplicity, we assume no 2FA password in this demo. If needed, we could add another state.
       newSocket.emit('tg_password', '');
     });
 
@@ -105,6 +106,12 @@ const App: React.FC = () => {
     if (socket) socket.emit('resume_bridge');
   }, [socket]);
 
+  const handleBroadcast = useCallback((text: string, imageBase64: string | null, mimeType: string | null, delay: number, filename: string | null, sendToAllGroups: boolean, loopHours: number) => {
+    if (socket) {
+      socket.emit('broadcast_wa', { text, imageBase64, mimeType, delay, filename, sendToAllGroups, loopHours });
+    }
+  }, [socket]);
+
   const submitOtp = () => {
     if (socket && otpCode) {
       socket.emit('tg_code', otpCode);
@@ -126,7 +133,7 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-brand-bg-dark text-gray-200 font-sans relative">
-      <Header />
+      <Header onOpenSettings={() => setShowSettings(true)} />
       <main className="container mx-auto p-4 md:p-8">
         <div className="max-w-4xl mx-auto bg-brand-bg-light rounded-2xl shadow-2xl overflow-hidden">
           {status === ConnectionStatus.DISCONNECTED || status === ConnectionStatus.ERROR ? (
@@ -142,6 +149,7 @@ const App: React.FC = () => {
               isForwarding={isForwarding}
               onPause={handlePause}
               onResume={handleResume}
+              onBroadcast={handleBroadcast}
               currentUser={currentUser}
             />
           )}
@@ -168,16 +176,26 @@ const App: React.FC = () => {
               className="w-full bg-brand-bg-dark border border-gray-600 rounded-lg py-3 px-4 text-white text-center text-2xl tracking-widest mb-6 focus:ring-2 focus:ring-brand-telegram focus:border-brand-telegram outline-none"
               autoFocus
             />
-            <button
-              onClick={submitOtp}
-              disabled={!otpCode}
-              className="w-full bg-brand-telegram hover:bg-blue-500 disabled:bg-gray-700 text-white font-bold py-3 px-4 rounded-lg transition-colors"
-            >
-              Confirmar Código
-            </button>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setStatus(ConnectionStatus.DISCONNECTED)}
+                className="w-1/3 bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={submitOtp}
+                disabled={!otpCode}
+                className="w-2/3 bg-brand-telegram hover:bg-blue-500 disabled:bg-gray-700 text-white font-bold py-3 px-4 rounded-lg transition-colors"
+              >
+                Confirmar Código
+              </button>
+            </div>
           </div>
         </div>
       )}
+
+      {showSettings && <SettingsPanel currentUser={currentUser} onClose={() => setShowSettings(false)} />}
     </div>
   );
 };
