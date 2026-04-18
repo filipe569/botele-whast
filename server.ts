@@ -211,7 +211,14 @@ async function startServer() {
         waClient = new WAClient({
           authStrategy: new LocalAuth(),
           puppeteer: {
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+            args: [
+              '--no-sandbox',
+              '--disable-setuid-sandbox',
+              '--disable-dev-shm-usage',
+              '--disable-gpu',
+              '--disable-software-rasterizer',
+              '--disable-extensions'
+            ]
           }
         });
 
