@@ -254,7 +254,14 @@ async function startServer() {
           await tgClient.disconnect();
         }
 
-        const stringSession = new StringSession(''); // In memory session for now
+        const fs = require('fs');
+        const tgSessionFile = '.tg_session';
+        let savedSession = '';
+        if (fs.existsSync(tgSessionFile)) {
+          savedSession = fs.readFileSync(tgSessionFile, 'utf8');
+        }
+        const stringSession = new StringSession(savedSession);
+        
         tgClient = new TelegramClient(stringSession, Number(apiId), apiHash, {
           connectionRetries: 5,
         });
@@ -277,6 +284,9 @@ async function startServer() {
             io.emit('log', { source: 'Error', message: `Erro no Telegram: ${err.message}`, type: 'text' });
           },
         });
+        
+        // Save session after successful start
+        fs.writeFileSync(tgSessionFile, tgClient.session.save(), 'utf8');
 
         isTgConnected = true;
         io.emit('log', { source: 'System', message: 'Telegram (Userbot) conectado com sucesso!', type: 'text' });
