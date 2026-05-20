@@ -5,12 +5,21 @@ import http from 'http';
 import { TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions';
 import { NewMessage } from 'telegram/events';
-import pkg from 'whatsapp-web.js';
-const { Client: WAClient, LocalAuth, MessageMedia } = pkg;
+import makeWASocket, { 
+  DisconnectReason, 
+  useMultiFileAuthState, 
+  fetchLatestBaileysVersion, 
+  makeCacheableSignalKeyStore, 
+  jidDecode,
+  getContentType
+} from '@whiskeysockets/baileys';
+import { Boom } from '@hapi/boom';
+import pino from 'pino';
 import path from 'path';
 import fs from 'fs';
 
 const CONFIG_FILE = path.join(process.cwd(), 'config.json');
+const WA_AUTH_PATH = path.join(process.cwd(), 'baileys_auth');
 
 function loadConfig() {
   if (fs.existsSync(CONFIG_FILE)) {
@@ -27,14 +36,6 @@ function saveConfig(config: any) {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
-// Simple mock translation function (in a real app, use Google Translate API or similar)
-async function translateText(text: string): Promise<string> {
-  // For demonstration, we'll just add a prefix. 
-  // To implement real translation, you'd need an API key for a service like Google Translate or DeepL.
-  // return `[Traduzido]: ${text}`;
-  return text; // Returning original text for now to avoid breaking without an API key
-}
-
 async function startServer() {
   const app = express();
   app.use(express.json());
@@ -45,14 +46,14 @@ async function startServer() {
   const PORT = 3000;
 
   let tgClient: TelegramClient | null = null;
-  let waClient: any = null;
+  let waSocket: any = null;
   let isWaConnected = false;
   let isTgConnected = false;
   let isForwarding = true;
   
   let targetTgGroupIds: string[] = [];
   let targetWaGroupIds: string[] = [];
-  let activeBroadcastTimeouts: any[] = []; // Changed from NodeJS.Timeout to any[] for simplicity with setInterval
+  let activeBroadcastTimeouts: any[] = [];
 
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok' });
@@ -125,7 +126,7 @@ async function startServer() {
       const { text, imageBase64, mimeType, delay, filename, sendToAllGroups, loopHours } = data;
       
       const runBroadcast = async () => {
-          if (!isWaConnected || !waClient) {
+          if (!isWaConnected || !waSocket) {
             io.emit('log', { source: 'Error', message: '❌ Disparo cancelado: WhatsApp não conectado.', type: 'text' });
             return;
           }
@@ -134,8 +135,8 @@ async function startServer() {
           
           if (sendToAllGroups) {
               try {
-                  const chats = await waClient.getChats();
-                  groupsToMessage = chats.filter((c: any) => c.isGroup).map((c: any) => c.id._serialized);
+                  const groups = await waSocket.groupFetchAllParticipating();
+                  groupsToMessage = Object.keys(groups);
                   io.emit('log', { source: 'System', message: `🔍 Buscando todos os grupos: ${groupsToMessage.length} encontrados.`, type: 'text' });
               } catch (e: any) {
                   io.emit('log', { source: 'Error', message: `❌ Falha ao obter grupos do WhatsApp: ${e.message}`, type: 'text' });
@@ -152,21 +153,26 @@ async function startServer() {
           io.emit('log', { source: 'System', message: `🚀 Iniciando disparo em massa para ${groupsToMessage.length} grupo(s) com intervalo de ${delay}s...`, type: 'text' });
 
           for (let i = 0; i < groupsToMessage.length; i++) {
-            const waGroupId = groupsToMessage[i];
+            const waGroupId = groupsToMessage[i].includes('@g.us') ? groupsToMessage[i] : `${groupsToMessage[i]}@g.us`;
             
             try {
               if (imageBase64) {
-                const media = new MessageMedia(mimeType, imageBase64, filename || 'image');
-                await waClient.sendMessage(waGroupId, media, { caption: text });
+                const buffer = Buffer.from(imageBase64, 'base64');
+                if (mimeType.startsWith('image/')) {
+                  await waSocket.sendMessage(waGroupId, { image: buffer, caption: text });
+                } else if (mimeType.startsWith('video/')) {
+                  await waSocket.sendMessage(waGroupId, { video: buffer, caption: text });
+                } else {
+                  await waSocket.sendMessage(waGroupId, { document: buffer, fileName: filename || 'file', mimetype: mimeType, caption: text });
+                }
               } else {
-                await waClient.sendMessage(waGroupId, text);
+                await waSocket.sendMessage(waGroupId, { text: text });
               }
               io.emit('log', { source: 'System', message: `✅ Disparo enviado para: ${waGroupId}`, type: 'text' });
             } catch (err: any) {
               io.emit('log', { source: 'Error', message: `❌ Falha ao enviar disparo para ${waGroupId}: ${err.message}`, type: 'text' });
             }
 
-            // Apply delay if this is not the last group
             if (i < groupsToMessage.length - 1 && delay > 0) {
               io.emit('log', { source: 'System', message: `⏳ Aguardando ${delay} segundos para o próximo disparo...`, type: 'text' });
               await new Promise(resolve => setTimeout(resolve, delay * 1000));
@@ -196,54 +202,56 @@ async function startServer() {
     socket.on('start_bridge', async (bridgeConfig) => {
       const { apiId, apiHash, phoneNumber, tgGroupId, waGroupId } = bridgeConfig;
       
-      // Parse multiple groups
       targetTgGroupIds = tgGroupId ? tgGroupId.split(',').map((id: string) => id.trim()).filter(Boolean) : [];
       targetWaGroupIds = waGroupId ? waGroupId.split(',').map((id: string) => id.trim()).filter(Boolean) : [];
 
       io.emit('log', { source: 'System', message: `Iniciando conexão... Monitorando ${targetTgGroupIds.length} grupos no Telegram e enviando para ${targetWaGroupIds.length} grupos no WhatsApp.`, type: 'text' });
 
-      // Initialize WhatsApp
-      try {
-        if (waClient) {
-          await waClient.destroy();
-        }
-        
-        waClient = new WAClient({
-          authStrategy: new LocalAuth(),
-          puppeteer: {
-            args: [
-              '--no-sandbox',
-              '--disable-setuid-sandbox',
-              '--disable-dev-shm-usage',
-              '--disable-gpu',
-              '--disable-software-rasterizer',
-              '--disable-extensions'
-            ]
+      // Initialize WhatsApp with Baileys
+      const initWhatsApp = async () => {
+        const { state, saveCreds } = await useMultiFileAuthState(WA_AUTH_PATH);
+        const { version } = await fetchLatestBaileysVersion();
+
+        waSocket = makeWASocket({
+          version,
+          auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
+          },
+          printQRInTerminal: false,
+          logger: pino({ level: 'silent' }),
+        });
+
+        waSocket.ev.on('creds.update', saveCreds);
+
+        waSocket.ev.on('connection.update', (update: any) => {
+          const { connection, lastDisconnect, qr } = update;
+          
+          if (qr) {
+            io.emit('wa_qr', qr);
+            io.emit('log', { source: 'System', message: 'QR Code do WhatsApp gerado. Por favor, escaneie.', type: 'text' });
+          }
+
+          if (connection === 'close') {
+            const shouldReconnect = (lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
+            isWaConnected = false;
+            io.emit('status', { telegram: isTgConnected, whatsapp: isWaConnected });
+            io.emit('log', { source: 'System', message: `WhatsApp desconectado. Reconectando: ${shouldReconnect}`, type: 'text' });
+            
+            if (shouldReconnect) {
+              initWhatsApp();
+            }
+          } else if (connection === 'open') {
+            isWaConnected = true;
+            io.emit('wa_qr', null);
+            io.emit('log', { source: 'System', message: 'WhatsApp conectado com sucesso!', type: 'text' });
+            io.emit('status', { telegram: isTgConnected, whatsapp: isWaConnected });
           }
         });
+      };
 
-        waClient.on('qr', (qr: string) => {
-          io.emit('wa_qr', qr);
-          io.emit('log', { source: 'System', message: 'QR Code do WhatsApp gerado. Por favor, escaneie.', type: 'text' });
-        });
-
-        waClient.on('ready', () => {
-          isWaConnected = true;
-          io.emit('wa_qr', null);
-          io.emit('log', { source: 'System', message: 'WhatsApp conectado com sucesso!', type: 'text' });
-          io.emit('status', { telegram: isTgConnected, whatsapp: isWaConnected });
-        });
-
-        waClient.on('disconnected', () => {
-          isWaConnected = false;
-          io.emit('log', { source: 'System', message: 'WhatsApp desconectado.', type: 'text' });
-          io.emit('status', { telegram: isTgConnected, whatsapp: isWaConnected });
-        });
-
-        waClient.initialize().catch((err: any) => {
-          io.emit('log', { source: 'Error', message: `Erro ao iniciar WhatsApp: ${err.message}`, type: 'text' });
-        });
-
+      try {
+        await initWhatsApp();
       } catch (err: any) {
         io.emit('log', { source: 'Error', message: `Erro no WhatsApp: ${err.message}`, type: 'text' });
       }
@@ -254,7 +262,6 @@ async function startServer() {
           await tgClient.disconnect();
         }
 
-        const fs = require('fs');
         const tgSessionFile = '.tg_session';
         let savedSession = '';
         if (fs.existsSync(tgSessionFile)) {
@@ -285,26 +292,15 @@ async function startServer() {
           },
         });
         
-        // Save session after successful start
         fs.writeFileSync(tgSessionFile, tgClient.session.save(), 'utf8');
 
         isTgConnected = true;
         io.emit('log', { source: 'System', message: 'Telegram (Userbot) conectado com sucesso!', type: 'text' });
         io.emit('status', { telegram: isTgConnected, whatsapp: isWaConnected });
 
-        // Listen for messages
         tgClient.addEventHandler(async (event: any) => {
           try {
             if (!isForwarding) return;
-
-            // --- FUNÇÃO 5: Horário de Funcionamento ---
-            // Exemplo: Permitir apenas das 08:00 às 18:00
-            const currentHour = new Date().getHours();
-            // Descomente as linhas abaixo para ativar o filtro de horário
-            // if (currentHour < 8 || currentHour >= 18) {
-            //   io.emit('log', { source: 'System', message: '🌙 Ignorada (Fora do horário de funcionamento).', type: 'text' });
-            //   return;
-            // }
 
             const message = event.message;
             let texto = message.text || message.message || '';
@@ -312,49 +308,45 @@ async function startServer() {
 
             io.emit('log', { source: 'Telegram', message: `📩 Nova mensagem: ${texto ? texto.substring(0, 30) + '...' : '[Sem texto]'}`, type: temMidia ? 'media' : 'text' });
 
-            // --- FUNÇÃO 4: Tradução Automática ---
-            // texto = await translateText(texto);
-
             const textoFinal = texto;
 
-            io.emit('log', { source: 'System', message: `⏳ Aguardando 5s antes de enviar...`, type: 'text' });
-            await new Promise(resolve => setTimeout(resolve, 5000));
+            // Wait a bit to ensure media is ready or to avoid detection
+            await new Promise(resolve => setTimeout(resolve, 3000));
 
-            if (isWaConnected && waClient && targetWaGroupIds.length > 0) {
-              
-              // Baixa a mídia uma vez se existir
-              let media: any = null;
+            if (isWaConnected && waSocket && targetWaGroupIds.length > 0) {
+              let mediaBuffer: any = null;
+              let mimetype = 'application/octet-stream';
+              let filename = 'file';
+
               if (temMidia) {
-                const buffer = await tgClient!.downloadMedia(message);
-                if (buffer) {
-                  let mimetype = 'application/octet-stream';
-                  let filename = 'file';
-                  if (message.photo) {
-                    mimetype = 'image/jpeg';
-                    filename = 'image.jpg';
-                  } else if (message.video) {
-                    mimetype = 'video/mp4';
-                    filename = 'video.mp4';
-                  } else if (message.document && message.document.mimeType) {
-                    mimetype = message.document.mimeType;
-                    filename = message.document.attributes?.find((a: any) => a.fileName)?.fileName || 'document';
-                  }
-                  media = new MessageMedia(mimetype, buffer.toString('base64'), filename);
-                } else {
-                  io.emit('log', { source: 'Error', message: 'Falha ao baixar mídia do Telegram.', type: 'text' });
+                mediaBuffer = await tgClient!.downloadMedia(message);
+                if (message.photo) {
+                  mimetype = 'image/jpeg';
+                  filename = 'image.jpg';
+                } else if (message.video) {
+                  mimetype = 'video/mp4';
+                  filename = 'video.mp4';
+                } else if (message.document && message.document.mimeType) {
+                  mimetype = message.document.mimeType;
+                  filename = message.document.attributes?.find((a: any) => a.fileName)?.fileName || 'document';
                 }
               }
 
-              // Envia para todos os grupos do WhatsApp
-              for (const waGroupId of targetWaGroupIds) {
+              for (const id of targetWaGroupIds) {
+                const waGroupId = id.includes('@g.us') ? id : `${id}@g.us`;
                 try {
-                  if (!temMidia || !media) {
-                    await waClient.sendMessage(waGroupId, textoFinal);
-                    io.emit('log', { source: 'System', message: `✅ Texto encaminhado para WA (${waGroupId}).`, type: 'text' });
+                  if (!temMidia || !mediaBuffer) {
+                    await waSocket.sendMessage(waGroupId, { text: textoFinal });
                   } else {
-                    await waClient.sendMessage(waGroupId, media, { caption: textoFinal });
-                    io.emit('log', { source: 'System', message: `📷✅ Mídia encaminhada para WA (${waGroupId}).`, type: 'media' });
+                    if (mimetype.startsWith('image/')) {
+                      await waSocket.sendMessage(waGroupId, { image: mediaBuffer, caption: textoFinal });
+                    } else if (mimetype.startsWith('video/')) {
+                      await waSocket.sendMessage(waGroupId, { video: mediaBuffer, caption: textoFinal });
+                    } else {
+                      await waSocket.sendMessage(waGroupId, { document: mediaBuffer, fileName: filename, mimetype, caption: textoFinal });
+                    }
                   }
+                  io.emit('log', { source: 'System', message: `✅ Encaminhado para WA (${waGroupId}).`, type: 'text' });
                 } catch (sendErr: any) {
                   io.emit('log', { source: 'Error', message: `Falha ao enviar para ${waGroupId}: ${sendErr.message}`, type: 'text' });
                 }
@@ -375,8 +367,8 @@ async function startServer() {
         await tgClient.disconnect();
         isTgConnected = false;
       }
-      if (waClient) {
-        await waClient.destroy();
+      if (waSocket) {
+        waSocket.end();
         isWaConnected = false;
       }
       io.emit('status', { telegram: isTgConnected, whatsapp: isWaConnected });
